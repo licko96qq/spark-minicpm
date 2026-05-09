@@ -11,7 +11,8 @@
 | **A** | 🟡 fallback | mgi 学生原版 webrtc_demo (PyTorch) | 自带 HTML | spark `/home/LChuang/workspace/minicpm/` | 远程算力服务 v1，简化版 |
 | **B** | ❌ 弃 | OpenBMB/MiniCPM-o-Demo (PyTorch+flash-attn) | 官方 4 模式 | spark `/home/LChuang/workspace/MiniCPM-o-Demo-official/` `bash launch.sh` | 结构性卡顿无解 |
 | **C** | ✅ **当前主线** | tc-mb/llama.cpp-omni feat/web-demo（C++）+ GGUF F16 | OpenSQZ/MiniCPM-V-CookBook WebRTC_Demo（Vue+LiveKit） | 本机 `bash route-c-up.sh F16` | 视频全双工，速度快不卡，滑窗激活 |
-| **C2** | 🟡 改造中 | 同 C，**Python 已支持透传 voice_clone_prompt + assistant_prompt** | 计划：getDisplayMedia 屏幕共享 | 同 C；调 init_sys_prompt 时带字段即可 | 桌面陪伴模式（看屏幕+陪聊） |
+| **C2** | ✅ 屏幕共享生效 / ⚠️ 陪伴 prompt 受 fast_resume 限制 | 同 C；后端透传 voice_clone_prompt 但 cpp_server fast_resume 不重设 | C 前端 dist 已带 `localStorage.videoSource='screen'` getDisplayMedia 分支 + apis/index.js 自动注入陪伴 prompt 字段 | 同 C，浏览器 console `localStorage.setItem('videoSource','screen')` + 刷新 | 桌面陪伴（先用屏幕共享，prompt 完美生效需 cpp_server 启动时注入） |
+| **B-cpp** | ✅ 已实测跑通 + 待用 | 同 C（llama.cpp-omni F16） | OpenBMB/MiniCPM-o-Demo Comni 分支（4 模式 demo + mobile React） | 本机 `bash route-b-cpp-up.sh`（自动停 C） | 4 模式入口（Omni/Audio-Duplex/Turnbased/Half-Duplex），对比测试 |
 
 ## spark 上目录全景
 
