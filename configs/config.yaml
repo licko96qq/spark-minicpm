@@ -1,0 +1,21 @@
+# deploy/config.yaml — LChuang 远程算力服务版本（前后端分离）
+# 客户端音频/视频在浏览器，spark 仅推理。无需 microphone/speaker/camera 设备配置。
+
+paths:
+  model_dir:  /home/LChuang/workspace/minicpm/MiniCPM-o-4_5
+  ref_audio:  /home/LChuang/workspace/minicpm/MiniCPM-o-4_5/assets/HT_ref_audio.wav
+
+service:
+  host: 127.0.0.1   # 只接受 localhost 连接，强制走 SSH tunnel
+  port: 8765
+
+inference:
+  max_new_tokens: 200
+  max_video_frames: 8
+  tts_rate: 24000
+  mic_rate: 16000
+  chunk_size: 16000
+
+conda:
+  base: /home/LChuang/miniconda3
+  env_name: minicpm
