@@ -9,25 +9,13 @@ SPARK_REMOTE="${SPARK_REMOTE:-spark_704}"
 DEMO_DIR="/home/LChuang/workspace/MiniCPM-V-CookBook/demo/web_demo/WebRTC_Demo"
 
 echo "==> [1/3] 启动 spark 端 4 服务 (LLM_QUANT=$LLM_QUANT, mode=duplex)"
-ssh "$SPARK_REMOTE" bash <<EOF
-set -e
-cd $DEMO_DIR
-mkdir -p .logs
-# 检查是否已运行
-if bash oneclick.sh status 2>&1 | grep -q "frontend.*running"; then
+# inline 单行 ssh + < /dev/null 防止后台进程随 ssh 退出（heredoc + nohup 实测会被 SIGHUP）
+if ssh "$SPARK_REMOTE" "cd $DEMO_DIR && bash oneclick.sh status 2>&1 | grep -q 'frontend.*running'"; then
   echo "    [skip] services already running"
 else
-  rm -f .logs/oneclick-start.log
-  nohup env PATH="\$HOME/.local/bin:\$HOME/.npm-global/bin:\$PATH" \\
-    PYTHON_CMD=/home/LChuang/miniconda3/envs/minicpm/bin/python \\
-    LLAMACPP_ROOT=/home/LChuang/workspace/llama.cpp-omni \\
-    MODEL_DIR=/home/LChuang/workspace/MiniCPM-o-4_5-gguf \\
-    LLM_QUANT=$LLM_QUANT CPP_MODE=duplex \\
-    bash oneclick.sh start > .logs/oneclick-start.log 2>&1 &
-  disown
-  echo "    started (waiting ~60s for cpp model load)"
+  ssh "$SPARK_REMOTE" "cd $DEMO_DIR && rm -f .logs/oneclick-start.log && nohup env PATH=\"\$HOME/.local/bin:\$HOME/.npm-global/bin:\$PATH\" PYTHON_CMD=/home/LChuang/miniconda3/envs/minicpm/bin/python LLAMACPP_ROOT=/home/LChuang/workspace/llama.cpp-omni MODEL_DIR=/home/LChuang/workspace/MiniCPM-o-4_5-gguf LLM_QUANT=$LLM_QUANT CPP_MODE=duplex bash oneclick.sh start > .logs/oneclick-start.log 2>&1 < /dev/null & disown && echo started"
+  echo "    started (waiting ~90s for cpp model load)"
 fi
-EOF
 
 echo "==> [2/3] 等待 cpp_server 健康检查"
 for i in {1..60}; do

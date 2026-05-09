@@ -1,10 +1,19 @@
 # spark-minicpm — 会话交接
 
-> 最后更新：2026-05-09 23:30 by Claude Code session（路线 C 跑通）
+> 最后更新：2026-05-10 01:35 by Claude Code session（路线 C2 后端 + inventory 归档）
 
 ## 当前进度
 
-**路线 C（WebRTC_Demo + llama.cpp-omni）端到端跑通**，4 服务全部 running，滑窗机制已激活。Mac 浏览器走 SSH tunnel 即可访问，**待用户实测 5 分钟视频全双工无卡顿**（KPI）。
+**路线 C（F16）跑通且用户实测「速度也很快」**。**路线 C2 后端 prompt 透传字段已就绪**（`voice_clone_prompt` + `assistant_prompt`，C++ 原生支持，**不用重编**）。**屏幕共享前端改造未实施**（用户休息，避免破坏路线 C，详细 patch 写进 `docs/09-spark-minicpm-inventory.md`）。
+
+24G GGUF 全套已 rsync 到本机 `~/Documents/workspace/spark-minicpm/models/`。
+
+spark 端清理：删 `gguf-ms-test/` + `V-CookBook-main.zip`（残留），workspace 27G。
+
+git 三层 baseline：
+- 本机 spark-minicpm: commit `58104b3` snapshot
+- spark MiniCPM-V-CookBook: baseline `5968457` → C2 patch `c489953`
+- spark llama.cpp-omni: baseline `edef517` → gitignore patch `479cbc4`
 
 ### 路线 C 最新状态（2026-05-09 23:30）
 
