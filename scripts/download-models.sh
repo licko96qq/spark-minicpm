@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# 用法: bash scripts/download-models.sh [F16|Q8_0|Q4_K_M|all]
-# 默认 all（16G F16 + 8.2G Q8_0 + 4.7G Q4_K_M + 子模型）
+# 用法: bash scripts/download-models.sh [Q4_K_M|Q8_0|F16|all]
+# 默认 Q4_K_M（4.7G，流畅档，4090/5090/GB10 都能跑）
+# 升级智能可后续追加：bash scripts/download-models.sh Q8_0  (8.2G 甜点)
+#                  bash scripts/download-models.sh F16   (16G 最高)
 # 目标目录: ${MODEL_DIR:-~/MiniCPM-o-4_5-gguf}
 # 依赖:   pip install -U "huggingface_hub[cli]"
 # 镜像:   HF_ENDPOINT=https://hf-mirror.com  (国内加速)
@@ -11,7 +13,7 @@ set -euo pipefail
 # TODO 验证仓库名 — tc-mb 发布的 MiniCPM-o-4_5 GGUF 仓库。若报 404 检查
 # https://hf-mirror.com/openbmb 和 https://hf-mirror.com/tc-mb
 REPO="${HF_REPO:-openbmb/MiniCPM-o-4_5-gguf}"
-QUANT="${1:-all}"
+QUANT="${1:-Q4_K_M}"
 MODEL_DIR="${MODEL_DIR:-$HOME/MiniCPM-o-4_5-gguf}"
 export HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
@@ -31,7 +33,7 @@ case "$QUANT" in
   Q8_0)    MAIN_FILES=("MiniCPM-o-4_5-Q8_0.gguf") ;;
   Q4_K_M)  MAIN_FILES=("MiniCPM-o-4_5-Q4_K_M.gguf") ;;
   all)     MAIN_FILES=("MiniCPM-o-4_5-F16.gguf" "MiniCPM-o-4_5-Q8_0.gguf" "MiniCPM-o-4_5-Q4_K_M.gguf") ;;
-  *) echo "用法: $0 [F16|Q8_0|Q4_K_M|all]"; exit 1 ;;
+  *) echo "用法: $0 [Q4_K_M|Q8_0|F16|all]"; exit 1 ;;
 esac
 
 echo "==> [1/2] 下载主模型 gguf (quant=$QUANT) to $MODEL_DIR"

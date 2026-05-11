@@ -1,226 +1,215 @@
 # spark-minicpm
 
-> 把 OpenBMB MiniCPM-o 4.5 多模态 LLM 通过多种部署方案跑在边缘设备（DGX Spark GB10 / RTX 4090 / 5090）+ 浏览器远程操作的工具集。
+> MiniCPM-o 4.5 多模态边缘部署 + **屏幕共享陪伴助手** + **自动 VAD 语音打断**。
+> 支持 DGX Spark (GB10) / RTX 4090 / 5090，浏览器远程操作，可读论文/看视频/做调研。
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
 ---
 
-## 1. 一句话定位
+## ✨ 我们做了什么（区别于官方 demo）
 
-spark-minicpm 是把 OpenBMB MiniCPM-o 4.5 多模态 LLM 通过多种部署方案跑在边缘设备（DGX Spark GB10 / RTX 4090 / 5090）+ 浏览器远程操作的工具集。核心价值：
+官方 `OpenBMB/MiniCPM-o-Demo` 是个 4 模式 baseline demo，**裸跑会有这些问题**：模型不开口 / 49 秒后自动断线 / 视频卡顿 / 没有屏幕共享 / 不能语音打断。我们解决了所有这些。
 
-- 边缘设备本地跑多模态全双工（文本+语音+视觉），不依赖云端
-- Mac/手机浏览器通过 SSH tunnel 远程使用边缘设备的算力
-- 三条主线路线（B-cpp / C / D）各自覆盖不同的交付场景，都基于同一个 `llama.cpp-omni` 推理核
+| 亮点 | 说明 | 在哪 |
+|---|---|---|
+| 🖥️ **屏幕共享陪伴模式** | omni tab 新增按钮，点一下切「摄像头 ↔ 屏幕共享」。模型实时看你的桌面（论文 PDF / Chrome 标签 / 视频窗口）回答问题 | 路线 B-cpp / D |
+| 🎙️ **自动 VAD 语音打断** | 模型说话时你一开口，silero-vad ONNX 后端检测到（prob ≥ 0.5）→ 200ms 内闭嘴切回 LISTEN。**告别手动按按钮** | 路线 C / D |
+| 🎛️ **量化档位脚本切换** | `bash routes/d/up.sh Q4_K_M\|Q8_0\|F16`，无需手编 config | 路线 C / D |
+| 💬 **可改提示词** | 屏幕共享模式默认注入官方人设，可换成你的专业陪伴 prompt（科研助手 / 客服 / 教师等） | 见下方 |
+| ⚡ **修了 sampling 真根因** | 官方 demo F16/Q8/Q4 默认全 LISTEN 不 SPEAK，根因是前端没传 `listen_prob_scale`。我们默认 `lps=0.3, flc=0` | 路线 B-cpp / D |
+| 🛡️ **滑窗自动停止 fix** | 49s 后 KV cache pruned → 默认勾选导致服务自动 stop，已去勾 | 路线 B-cpp / D |
+| 📺 **HD vision 自动避坑** | 屏幕共享模式自动关「高清视觉」（max_slice_nums=1），avoid +100ms 卡顿 | 路线 B-cpp / D |
+| 🚀 **多机迁移文档** | 4090（sm_89）需重编 llama-server，5090（sm_120）可直接复用 GB10 编译产物 | `docs/15` |
 
-## 2. 架构图
+---
+
+## 🎯 我该选哪条路线？
 
 ```
-Mac/手机浏览器  ──SSH tunnel──>  spark/4090/5090
-   getUserMedia                    │
-   getDisplayMedia                 ├─ B-cpp: gateway+worker+llama-server
-                                   ├─ C:    LiveKit+backend+frontend+cpp_server+llama-server
-                                   └─ D:    (B-cpp + silero-vad)
-
-                                   ↓ 共享
-                                   llama.cpp-omni (build/bin/llama-server)
-                                   MiniCPM-o-4_5-gguf (F16/Q8_0/Q4_K_M)
+┌──────────────────────────────────────────────────────────┐
+│  想要自动 VAD 打断  +  屏幕共享  +  4 模式  +  Q4/Q8/F16  │
+│  → 路线 D（推荐主线）                                       │
+├──────────────────────────────────────────────────────────┤
+│  只要简单视频陪伴 + 自动打断（生产成熟）                       │
+│  → 路线 C                                                  │
+├──────────────────────────────────────────────────────────┤
+│  调试 / 4 模式对比 / 工程改造起点                           │
+│  → 路线 B-cpp                                              │
+└──────────────────────────────────────────────────────────┘
 ```
 
-浏览器侧：`getUserMedia` 采麦克风/摄像头，`getDisplayMedia` 采屏幕共享。WebSocket / WebRTC 上行到边缘机。
+完整对比矩阵：[docs/14-routes-comparison.md](docs/14-routes-comparison.md)
 
-边缘机侧：三条路线都套在同一个 `llama-server`（tc-mb/llama.cpp-omni `feat/web-demo` 分支）上。不同路线差在前端/后端如何封装 duplex 协议与视频通道。
+---
 
-## 3. 三条路线快速对比
-
-| 路线 | 模式 | 屏幕共享 | 自动 VAD | 启动复杂度 | 用途 |
-|---|---|---|---|---|---|
-| B-cpp | 4 模式（text/audio/duplex/omni） | 支持 | 手动按钮 | 低 | 工程改造起点，单机 4 端口 |
-| C | 1 模式（视频双工） | 支持 | 自动（后端 dur_vad_full） | 中（5 服务 LiveKit+LLM+前后端） | 生产级简单陪伴 |
-| D | 4 模式 + silero-vad | 支持 | 自动（前端 silero-vad WASM） | 低 | 长期主线，B-cpp 体验升级 |
-
-完整对比（含 TTFT、单步耗时、资源占用、滑窗行为、当前已知问题）见 [docs/14-routes-comparison.md](docs/14-routes-comparison.md)。
-
-选型建议：
-
-- 想跑通最小闭环：先走 **B-cpp**
-- 要给外部人演示、不想自己调参：走 **C**
-- 想做工程改造 + 自动打断：走 **D**
-
-## 4. 快速开始（60 秒）
-
-前提：已在边缘机（spark / 4090 / 5090）按第 5 节完成部署；本机已建好到边缘机的 SSH tunnel（见 `scripts/ssh-setup.md`）。
+## 🚀 60 秒上手（默认 Q4_K_M）
 
 ```bash
 # 1. clone
-git clone https://github.com/<user>/spark-minicpm.git && cd spark-minicpm
+git clone https://github.com/licko96qq/spark-minicpm.git && cd spark-minicpm
 
-# 2. 选路线启动（前提：spark 上已部署上游 + 应用 patches）
-bash routes/b-cpp/up.sh         # 或 routes/c/up.sh F16
-                                # 或 routes/d/up.sh Q8_0
+# 2. 在 GPU 机器上下载 Q4_K_M 模型（默认 4.7G，4090/5090/GB10 都能跑）
+bash scripts/download-models.sh
+# 想要更聪明：bash scripts/download-models.sh Q8_0   或   F16
 
-# 3. 浏览器打开
-open http://localhost:8040/omni/  # B-cpp
-# 或 https://localhost:8088/      # C
-# 或 http://localhost:8050/omni/  # D
-```
-
-路线 C 使用 HTTPS 自签证书（LiveKit WebRTC 要求 secure context），首次进入需在浏览器手动接受。B-cpp / D 走 HTTP，但因为是 `localhost` 也被浏览器视作 secure context，麦克风/摄像头权限可正常申请。
-
-## 5. spark/边缘机部署
-
-系统要求：
-
-- Linux x86_64 (RTX 4090/5090) 或 aarch64 (DGX Spark GB10)
-- CUDA 12.8+（4090 sm_89 / 5090 sm_120 / GB10 sm_120）
-- cmake 3.20+，gcc 11+
-- Python 3.10+ 带 venv
-- Node 18+ 与 pnpm 10+（仅路线 C 前端编译需要）
-- 至少 32GB 可用内存，推荐 64GB+（F16 档位）
-
-部署步骤：
-
-```bash
-# 1. 下载模型（F16 / Q8_0 / Q4_K_M 一次拉齐，约 33GB）
-bash scripts/download-models.sh all
-#    只拉某个档位：bash scripts/download-models.sh Q8_0
-
-# 2. 编译 llama.cpp-omni（feat/web-demo 分支，含 CUDA）
+# 3. 编译 llama-server（自动探 GPU 架构 sm_89/sm_120）
 bash scripts/build-llama-cpp-omni.sh
-#    产物：build/bin/llama-server
 
-# 3. clone 对应路线的上游仓库
-#    路线 B-cpp：OpenBMB/MiniCPM-o-Demo 的 Comni 分支
-#    路线 C：  OpenSQZ/MiniCPM-V-CookBook demo/web_demo/WebRTC_Demo
-#    路线 D：  基于 B-cpp 的 fork（本仓库内含）
-#    详见 routes/<X>/README.md
+# 4. 部署上游代码并应用 patches（spark / 4090 / 5090 任一）
+# 详见 routes/d/README.md
 
-# 4. 应用本仓库的 patches
-bash scripts/apply-patches.sh b-cpp /path/to/MiniCPM-o-Demo-Comni
-bash scripts/apply-patches.sh c     /path/to/MiniCPM-V-CookBook
-bash scripts/apply-patches.sh d     /path/to/MiniCPM-o-Demo-Comni-d
+# 5. 启动路线 D
+bash routes/d/up.sh           # 默认 Q4_K_M
+# bash routes/d/up.sh Q8_0    # 想要更聪明换 Q8
 
-# 5. 改 config.json：模型路径、端口、量化档位
-vim config.json
+# 6. 浏览器打开
+open http://localhost:8050/omni/
+# 顶部点「屏幕共享」按钮 → 选窗口/标签页 → 说话提问
 ```
 
-模型档位选择：
+---
 
-| 档位 | 大小 | 显存占用 | 推荐硬件 | 智能水平 |
-|---|---|---|---|---|
-| F16 | 16G | ~18G | 5090 32G / GB10 121G | 接近 HF BF16 原始权重 |
-| Q8_0 | 8.2G | ~10G | 4090 24G / 5090 / GB10 | 甜点档，肉眼无差 |
-| Q4_K_M | 4.7G | ~6G | 4090 24G | 极致流畅，智能肉眼降 |
+## 💬 怎么改提示词适配自己的场景
 
-## 6. Mac 本地使用
+模型默认用官方「面壁小钢炮」人设。**不同场景换不同 prompt** 才能发挥它的能力。
 
-SSH 连接与 tunnel 配置：
+### 方式 A：浏览器侧改（最简单，临时改）
 
-- 在 `~/.ssh/config` 里为边缘机配个 Host 别名（本项目示例用 `spark_704`）
-- 用 SSH key 免密登录，tunnel 端口由 `scripts/ssh-setup.md` 一键建立
-- 每条路线需要转发的端口不同（B-cpp 1 个 / C 5 个 / D 1 个），启动脚本会自动转
+打开 omni 页面 → 左侧面板 **System Prompt** textarea 直接改即可，下次启动会话生效。
 
-浏览器权限：
+### 方式 B：屏幕共享模式默认 prompt（永久改，覆盖 textarea）
 
-- 首次打开会弹麦克风/摄像头授权，必须 Allow（拒绝后要去浏览器站点权限里手动恢复）
-- Chrome / Edge / Safari 均测试通过
-- iOS Safari 走 `https://localhost:<port>` 通过局域网访问（需边缘机 IP 直连，不走 tunnel）
+文件：`spark` 端 `MiniCPM-o-Demo-D/static/omni/omni-app.js` 找 `_companionPrompt` 变量（约 1642 行）。
 
-HTTPS 自签证书（仅路线 C）：
+**示例 prompt 模板**：
 
-- 首次访问 `https://localhost:8088/` 会报"不安全"，点"高级 → 继续访问"
-- 证书由 LiveKit oneclick 脚本自签，有效期 10 年
+```js
+// 调研/论文陪读
+const _companionPrompt = `你是一个学术论文陪读助手。能看到用户屏幕（PDF/网页）。
+- 主动指认图表/公式/章节标题
+- 用中文解释技术概念，必要时附英文原文
+- 用户问"这段什么意思"时给出 2-3 句精确总结，不要长篇大论`;
 
-## 7. 迁移到 4090/5090
+// 客服支持
+const _companionPrompt = `你是一名专业客服。能看到用户当前页面截图。
+- 引导用户操作，按钮位置精确指认
+- 不知道答案时直接说"我需要转人工"`;
 
-完整迁移指南见 [docs/15-migration-4090-5090.md](docs/15-migration-4090-5090.md)。关键点：
+// 编程导师
+const _companionPrompt = `你是经验丰富的工程师陪伴写代码。能看到用户的 IDE 屏幕。
+- 主动指出明显的代码错误
+- 解释 API 用法时配合屏幕上的代码举例
+- 不要主动改代码，等用户问再回答`;
 
-**4090（sm_89）**：
+// 视频陪看
+const _companionPrompt = `你是用户的视频陪看伙伴。能看到屏幕上播放的视频。
+- 主动评论画面内容（人物/场景/字幕）
+- 用户问"刚才说什么"时复述上一段台词
+- 不抢话，停顿超过 3 秒再开口`;
+```
 
-- 必须重编 `llama-server`，GB10 的 sm_120 二进制不能跑
-- `cmake -DCMAKE_CUDA_ARCHITECTURES=89`，其他步骤同 `scripts/build-llama-cpp-omni.sh`
-- 24G 显存推荐跑 Q4_K_M（留 buffer 给 ctx 与 vision encoder），Q8_0 勉强但 ctx 要压到 4096
+改完刷新浏览器即可生效。注意 prompt 不要太长（会消耗 KV cache），200 token 内最佳。
 
-**5090（sm_120）**：
+### 方式 C：让 prompt 动态化（高级）
 
-- 与 GB10 同 arch，可直接复用 GB10 编译产物（`build/bin/llama-server` 拷过去即可）
-- 32G 显存推荐 Q8_0，ctx 可以开 8192 甚至 16384
+把 system_prompt textarea 改成 dropdown，用户选场景 → 自动注入对应 prompt。需要改 omni.html + omni-app.js。issue 欢迎。
 
-**GB10（DGX Spark）**：
+---
 
-- 内存带宽 = A100 的 14%，F16 omni 单步 ~1s 会卡
-- Q8_0 是目前实测的甜点档
-- 屏幕共享 + 高清视觉（max_slice_nums=3）会把 prefill 吃到 +100ms，实测建议关掉
+## 🏗️ 架构图
 
-## 8. 故障排查
+```
+浏览器（Mac/手机）
+    │ getUserMedia (麦克风)
+    │ getDisplayMedia (屏幕共享) ⭐
+    │
+    ├─ SSH tunnel ──► spark / 4090 / 5090
+    │                  │
+    │                  ├─ 路线 B-cpp: gateway (8040) → worker (22440) → llama-server (19080)
+    │                  │   4 模式 (omni / audio-duplex / half-duplex / chat)
+    │                  │
+    │                  ├─ 路线 C: LiveKit (7880) + backend (8021) + frontend (8088 HTTPS)
+    │                  │   + cpp_server (9060) → llama-server (19060)
+    │                  │   原生自动 VAD 打断 ⭐
+    │                  │
+    │                  └─ 路线 D: gateway (8050) → worker (22450) → llama-server (19090)
+    │                       4 模式 + 自动 VAD 打断 ⭐ + 屏幕共享 ⭐
+    │
+    └─ 共享底层：llama.cpp-omni (feat/web-demo 分支)
+                MiniCPM-o-4_5-gguf (F16 / Q8_0 / Q4_K_M)
+                silero_vad.onnx (1.8 MB)
+```
 
-完整排查手册见 [docs/16-troubleshooting.md](docs/16-troubleshooting.md)。常见前三：
+---
 
-**1. 模型一直 LISTEN 不 SPEAK**
-
-根因：前端 `preparePayload.config` 没传 `listen_prob_scale`，后端用默认值 1.0 导致 sampling 永远偏向 listen。
-
-解决：确认 `static/omni/omni-app.js` 的 preparePayload 里 `config.listen_prob_scale=0.3, force_listen_count=0`。实测 0.3 是目前 F16/Q8 唯一稳定可用值，调高到 0.4+ 反而失败。
-
-**2. 49s 后自动 stop（视频/音频对话自动中断）**
-
-根因：KV 滑窗触发时前端 `stopOnKvShrink` 复选框默认勾着，滑窗一触发就停。
-
-解决：`static/omni/omni.html` 里 `<input id="stopOnKvShrink">` 去掉 `checked` 属性，或运行时手动取消勾选。
-
-**3. 屏幕共享 / 视频全双工卡顿**
-
-根因：Q8_0 + omni 模式 + 勾了「高清视觉 64 tok」会把 max_slice_nums 从 1 升到 3，视觉 token 从 64 激增到 256+，prefill 单步 +100ms。
-
-解决：切 Q4_K_M 或关「高清视觉」。屏幕共享场景 1 slice 已够识别屏幕元素。
-
-## 9. 仓库结构
+## 📁 仓库结构
 
 ```
 spark-minicpm/
-├── README.md
-├── HANDOVER.md        # 时序日志（每次会话的进展、决策、踩坑）
-├── LICENSE            # Apache 2.0
-├── docs/              # 16 篇专题文档
-│   ├── 01-architecture.md            # 路线 A 架构（历史，瘦客户端）
-│   ├── 02-refactor-deltas.md         # 路线 A 改造 diff
-│   ├── 03-pitfalls.md                # 浏览器音频踩坑
-│   ├── 04-route-b-deployment-plan.md # 路线 B 部署规划
-│   ├── 05-route-b-issues.md          # 路线 B 问题集
-│   ├── 06-rollback-snapshots.md      # 路线 B 回滚
-│   ├── 07-mode-test-matrix.md        # 4 模式实测矩阵
-│   ├── 08-route-c-llama-cpp-omni.md  # 路线 C llama.cpp-omni 部署
-│   ├── 09 ~ 13                       # 路线 C 调优与监控
-│   ├── 14-routes-comparison.md       # 三条路线完整对比
-│   ├── 15-migration-4090-5090.md     # 迁移 4090/5090 指南
-│   └── 16-troubleshooting.md         # 故障排查手册
-├── routes/            # 主线路径
-│   ├── b-cpp/         # 4 模式 demo（上游 OpenBMB Comni）
-│   ├── c/             # WebRTC 视频双工（上游 OpenSQZ CookBook）
-│   └── d/             # B-cpp + silero-vad（本仓库自研）
-├── scripts/           # 模型下载 / 编译 / patch / SSH tunnel
-│   ├── download-models.sh
-│   ├── build-llama-cpp-omni.sh
-│   ├── apply-patches.sh
-│   └── ssh-setup.md
-└── archive/           # 弃用路线（route-a 瘦客户端等历史快照）
+├── README.md                # 本文件
+├── HANDOVER.md              # 时序日志（含已解决问题 + TODO）
+├── LICENSE                  # Apache 2.0
+│
+├── docs/                    # 16 篇专题文档
+│   ├── 14-routes-comparison.md       # 三路线完整对比
+│   ├── 15-migration-4090-5090.md     # GPU 迁移指南
+│   └── 16-troubleshooting.md         # 已知坑全记录
+│
+├── routes/
+│   ├── b-cpp/               # 4 模式 demo + 屏幕共享 + 手动打断
+│   │   ├── README.md
+│   │   ├── up.sh / down.sh
+│   │   └── patches/0001-screen-share-companion-mode.patch
+│   ├── c/                   # WebRTC + 自动 VAD 打断（生产成熟）
+│   │   ├── README.md
+│   │   └── up.sh / down.sh
+│   └── d/                   # ⭐ 推荐主线：B-cpp + silero-vad
+│       ├── README.md
+│       ├── up.sh / down.sh
+│       └── patches/0001-silero-vad-integration.patch
+│
+├── scripts/
+│   ├── download-models.sh        # 默认下 Q4_K_M（4.7G），可选 Q8/F16
+│   ├── build-llama-cpp-omni.sh   # 自动探 sm_89/sm_120 编译
+│   ├── apply-patches.sh          # 一键应用 patches
+│   └── ssh-setup.md              # SSH key + tunnel
+│
+└── archive/                 # 历史路线（route-a，已弃用）
 ```
 
-## 10. 致谢 + License
+---
 
-**上游仓库**：
+## 🖥️ 4090 / 5090 迁移
 
-- [OpenBMB/MiniCPM-o-Demo](https://github.com/OpenBMB/MiniCPM-o-Demo) (Apache 2.0) — 路线 B-cpp / D 的上游 demo（Comni 分支）
-- [OpenSQZ/MiniCPM-V-CookBook](https://github.com/OpenSQZ/MiniCPM-V-CookBook) (Apache 2.0) — 路线 C 的上游（WebRTC_Demo + LiveKit 编排）
-- [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp) (MIT) — 三条路线共享的 C++ 推理引擎（`feat/web-demo` 分支，含 duplex 协议与 token2wav 滑窗）
-- [OpenBMB/MiniCPM-o](https://github.com/OpenBMB/MiniCPM-o) — 模型权重与论文（本项目仅重分发 GGUF 量化）
+详见 [docs/15-migration-4090-5090.md](docs/15-migration-4090-5090.md)。要点：
 
-**工具与资源**：
+| GPU | CUDA SM | VRAM | 推荐量化 | llama-server |
+|---|---|---|---|---|
+| GB10 (DGX Spark) | sm_120 | 121G unified | F16 / Q8 | 直接用 |
+| **RTX 4090** | sm_89 | 24G | **Q4_K_M / Q8** | ⚠️ **必须重编** `-DCMAKE_CUDA_ARCHITECTURES=89` |
+| **RTX 5090** | sm_120 | 32G | Q8 / F16 | 复用 GB10 编译产物 |
 
-- DGX Spark / GB10 硬件测试平台
-- MiniCPM 团队（魏弘量 / 蔡天驰 / 子豪）的飞书群答疑与路线推荐
+`scripts/build-llama-cpp-omni.sh` 已自动探卡。
 
-**License**：本仓库内所有原创代码、脚本、文档采用 [Apache License 2.0](LICENSE)。对上游仓库的 patches 保留各上游 LICENSE（主要是 Apache 2.0 和 MIT），应用 patch 时不改变上游授权。
+---
 
-**作者**：licko & contributors
+## 🔧 故障排查（前三）
+
+1. **模型一直 LISTEN 不 SPEAK** → 前端 `preparePayload.config` 没传 `listen_prob_scale=0.3`（详见 [docs/16](docs/16-troubleshooting.md)）
+2. **49s 后自动断线** → 取消 `omni.html` 的 `stopOnKvShrink` 默认 `checked`
+3. **卡顿明显** → 切 Q4_K_M / 关「高清视觉」 / 屏幕共享降帧率到 0.5fps
+
+完整：[docs/16-troubleshooting.md](docs/16-troubleshooting.md)
+
+---
+
+## 🙏 致谢
+
+上游（均 Apache 2.0 / MIT）：
+- [OpenBMB/MiniCPM-o-Demo](https://github.com/OpenBMB/MiniCPM-o-Demo) (Comni 分支) — 4 模式 baseline demo
+- [OpenSQZ/MiniCPM-V-CookBook](https://github.com/OpenSQZ/MiniCPM-V-CookBook) — WebRTC + LiveKit 集成
+- [tc-mb/llama.cpp-omni](https://github.com/tc-mb/llama.cpp-omni) (feat/web-demo) — C++ 推理后端
+- [snakers4/silero-vad](https://github.com/snakers4/silero-vad) (MIT) — 语音活动检测
+
+本仓库：Apache 2.0 © 2026 licko & contributors
