@@ -1,10 +1,25 @@
 # spark-minicpm — 会话交接
 
-> 最后更新：2026-05-10 01:35 by Claude Code session（路线 C2 后端 + inventory 归档）
+> 最后更新：2026-05-11 14:10 by Claude Code session（路线 C2 调优 + 监控分析）
 
-## 当前进度
+## 当前进度（2026-05-11 14:10）
 
-**路线 C（F16）跑通且用户实测「速度也很快」**。**路线 C2 后端 prompt 透传字段已就绪**（`voice_clone_prompt` + `assistant_prompt`，C++ 原生支持，**不用重编**）。**屏幕共享前端改造未实施**（用户休息，避免破坏路线 C，详细 patch 写进 `docs/09-spark-minicpm-inventory.md`）。
+**路线 C2 屏幕共享 + 陪伴 prompt 全链路打通 + 调优定型**：
+
+- **当前配置（用户实测保留）**：Q8_0 + ctx 8192 + 短陪伴 prompt + n_keep 122
+- 用户体感：流畅+智能好（Q8 是甜点档）
+- 屏幕共享 ✅（localStorage.videoSource=screen 触发）
+- 陪伴 prompt ✅（cpp_server.py warmup 注入 SYSTEM_PROMPT 环境变量绕开 fast_resume）
+
+**3 个剩余问题（根因已定位 = 滑窗机制）**：
+
+1. 周期性卡顿（~52s 一次）
+2. 记忆突然丢失（滑窗 `freed 3934 tokens`）
+3. 字幕有但语音停（滑窗 `TTS KV cleared` 把正在生成的 wav chunk 中断）
+
+→ 根治需改 C++ 源码 `tools/omni/omni.cpp` 滑窗逻辑（不清 TTS KV / 等 turn 结束才滑窗），后续工作。
+
+详见 `docs/11-user-feedback.md`、`docs/12-tuning-plan.md`、`docs/13-monitoring-tuning-results.md`。
 
 24G GGUF 全套已 rsync 到本机 `~/Documents/workspace/spark-minicpm/models/`。
 
