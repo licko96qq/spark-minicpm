@@ -1,5 +1,232 @@
 # spark-minicpm — 会话交接
 
+> 最后更新：2026-05-11 16:05 by Claude Code session（路线 B-cpp 4 模式 demo — 真根因定位 + 前端默认 config 修复完成，等用户浏览器实测）
+
+---
+
+## ✅ 2026-05-11 16:05 修复进展（接续）
+
+### 真根因（不是 HANDOVER 之前猜的方向）
+
+前端 `static/omni/omni-app.js` 和 `static/audio-duplex/audio-duplex-app.js` 构造 `preparePayload.config` 时**只传 `length_penalty`**，没有传 `listen_prob_scale` / `force_listen_count`。后端因此用 DuplexConfig 默认值（`lps=1.0, flc=3`），F16 模型在该 sampling 分布下**永远输出 LISTEN**，永远不 SPEAK。
+
+### 诊断证据
+
+`/tmp/test_duplex_v6.py`（接 `audio_only` 异步消息流）对比：
+- `lps=1.0 flc=3`（默认）：23 chunks 全 LISTEN, 0 audio_only msg, text 为空
+- `lps=0.3 flc=0`：c12 起开始 SPEAK, 3 个 audio_only msgs(共 348160 base64 chars ≈ 4s 音频), text=`"我错了，再也不敢了，下次我一定一定会下单的。"`
+
+### audio 流向（之前被误解）
+
+C++ duplex 模式的音频**不走** `result.audio_data`，走独立 WS 消息：
+```json
+{"type": "audio_only", "audio_data": "..."}
+```
+由 `worker.py:_wav_poll_loop()` 异步轮询 `cpp_backend._collect_wav_output_nowait()` 推送（worker.py:2499）。
+
+### 已应用修复
+
+| 文件 | 改动 |
+|---|---|
+| `static/omni/omni-app.js:1591` | preparePayload.config 增加 `listen_prob_scale: 0.3, force_listen_count: 0` |
+| `static/audio-duplex/audio-duplex-app.js:958` | 同上 |
+
+备份：`*.bak-20260511`
+
+`cpp_backend.py` 的 patch 已回滚（多余且无效，因为音频不走 result.audio_data）。
+
+### 服务状态
+
+`http://localhost:8040/` HTTP，worker 22440 idle, llama-server 19080 ok, SSH tunnel 已建。
+
+### 2026-05-11 16:55 追加修复（用户实测反馈）
+
+用户测试发现：
+1. ✅ 能用，但**回复卡顿**（F16 + GB10 内存带宽 14% A100 的结构性瓶颈）
+2. ❌ 49s 后 KV 滑窗触发 → `Stop on KV pruning` 复选框勾着导致自动停止
+
+修复：
+- `config.json`: F16.gguf → **Q8_0.gguf**（8.2G，路线 C2 验证甜点档）
+- `static/omni/omni.html:219`: `<input ... id="stopOnKvShrink" checked>` → 去掉 `checked`
+- 需要重启路线 B-cpp 服务加载 Q8 模型
+
+### 2026-05-11 17:45 追加诊断（用户问"语音无法打断"）
+
+**真相**：Comni 分支**没有"开口自动打断"功能**。worker.py:2120 注释明确：
+> Client 在 audio_chunk 中携带 force_listen: true → **强制模型持续监听（替代旧 interrupt）**
+
+实现机制：前端 Force Listen 按钮 toggle `forceListenActive`，激活时 audio_chunk 自动带 `force_listen: true`，模型立刻切回 listen。这是**手动按钮**，不是自动 VAD。
+
+用户期望的是「开口模型自动停」，这需要前端加 VAD 自动 toggle force_listen。属于功能增强，不是 bug。
+
+**lps 调参实测**（重要）：
+- lps=0.3 + flc=0 → speak ✅（c12 起，3 个 audio_only msgs）
+- lps=0.4/0.5/0.6 + flc=0 → 完全不 speak ❌（临界点很尖）
+- lps=1.0 + flc=3（默认）→ 完全不 speak ❌
+
+也就是说 **lps=0.3 是唯一稳定可用值**，调高反而失败。这反映 F16/Q8 模型的 sampling 分布有 cliff，可能与 logits 缩放方式有关。
+
+**Session 包**：用户已下载 `session_uploads/session_20260511_173451_omni_mp109scs.tar.gz`（44MB），含 frontend_replay.webm + merged_replay.mp4/wav + meta.json + recording.json，准备发给官方排查。
+
+### 2026-05-11 17:55 追加问题（用户反馈）
+
+**Q8 + 视频全双工 + 「高清视频」开关 → 明显卡顿**
+
+- 复现：omni 模式跑 Q8，对话中勾选「高清视觉 64 tok」（HD slices）→ 回答与回复卡顿肉眼可见
+- 关联：max_slice_nums 从 1 升到 3 时每帧视觉 token 从 64 → 256+，prefill 单步推理 +100ms 量级（agent 调研数据）
+- 临时建议：屏幕共享/陪伴模式下**默认关闭高清视觉**，1 slice 已够识别屏幕元素
+- 待办：考虑前端把「高清视觉」与「屏幕共享模式」互斥；或在勾选高清时弹警告
+
+### 2026-05-11 18:30 屏幕共享陪伴模式上线（A 方案阶段 1）
+
+新增功能：omni 模式顶部加「屏幕共享」按钮，点击切换 摄像头 ↔ 屏幕共享 (`getDisplayMedia`)，自动应用陪伴策略。
+
+**修改文件**：
+- `static/omni/omni.html` 加 `screenShareBtn`（屏幕图标）
+- `static/omni/omni-app.js` 加 `_videoSource` 状态、`_openVideoStream` screen 分支、`switchVideoSource()` 方法、帧率节流（屏幕模式 0.5 fps）、prepare payload 自动注入陪伴 prompt + 强制 max_slice_nums=1 + 自动关 HD
+- 备份：`*.bak-screen-share-20260511`
+
+**踩过的坑**：
+1. Python 写 JS 时不小心把字符串引号 `"` 写成中文 typographic `"`，`node --check` 通过但运行时报 ReferenceError 整个 module 加载失败 → fix_quotes.py 修复
+2. `screenShareBtn` visibility 跟随 camFlipBtn paired/lone 两种 pattern
+
+**陪伴 prompt 几次迭代**：
+- v1（草案）：长篇陪伴分析师 prompt（"沉默观察"等条款）→ **用户反馈太能说**
+- v2（当前）：直接用官网默认 prompt（"扮演一个具有以上声音特征的助手..."）
+
+**模型档位实测**（用户偏好）：
+- F16：智能高但 GB10 带宽吃满，卡顿明显
+- **Q8_0**：甜点档，路线 C2 / 用户验证可用
+- Q4_K_M：4.7G 极致流畅，智能水平肉眼降，用作流畅性 baseline
+
+**打断功能现状**：
+- 手动：底部「强制收听」按钮（force_listen=true）
+- 自动 VAD：**未实现**（路线 C 是后端 dur_vad_full ≥ 0.85 检测，需要移植 silero-vad 或前端 RMS）
+- 决策：用户暂搁置，先用手动按钮
+
+### 下一步（用户操作）
+
+刷新浏览器，进 omni / audio duplex tab，说话，预期：
+- 文字字幕出现
+- 模型语音回复（拼接 `audio_only` 消息播放）
+
+### 如果浏览器还不响应
+
+按以下顺序排查：
+1. F12 控制台看 WS 消息是否真有 `audio_only`
+2. AudioPlayer 是否消费 `audio_only`（grep `audio_only` in `static/omni/`, `static/duplex/lib/`）
+3. 试 `lps=0.2 flc=0` 进一步压低 listen 偏好
+4. 看 `tmp/worker_0.log` 看后端是否真在 SPEAK
+
+### CLI 验证脚本（永久保留）
+
+```bash
+ssh spark_704 'cd /home/LChuang/workspace/MiniCPM-o-Demo-Comni && .venv/base/bin/python /tmp/test_duplex_v6.py 0.3 0'
+```
+预期看到 `speak>=2, audio_only_msgs>=1, TEXT 非空`。
+
+---
+
+## 历史 ACTIVE（已解，留作记录）
+
+---
+
+## 🚧 ACTIVE：路线 B-cpp 4 模式 demo（2026-05-11 15:05）
+
+### 用户最终请求
+> "我说话，它现在没有任何的反应，也没有消息出来。一直问'你好在吗'没反馈。希望全局规划、考虑、测试，确认通过了再给我。我先去休息。"
+
+### 任务目标（下一次会话要完成）
+让浏览器打开 http://localhost:8040/ → 视频全双工/音频双工 tab → 说话 → 模型有文字+语音回复。
+
+### 当前状态（已修复部分）
+
+✅ **依赖缺失修复完成** — 这是阻塞了启动的真根因，HANDOVER 之前的"实测启动成功"是误判（只验证了 health endpoint，没真点 4 模式按钮）。
+
+`.venv/base` 里今天新装了：`soundfile`, `PyYAML`, `Pillow`, `librosa`, `websockets`（及其依赖：scipy/numba/numba 等）。
+
+走完整 audio_chunk 处理路径不再抛 `ModuleNotFoundError`。
+
+✅ **服务可启动且 worker idle** — `bash route-b-cpp-up.sh` 起来后：
+- gateway 8040（**HTTP 不是 HTTPS**，start_all.sh `--http` 模式）✅
+- worker 22440 ✅ status=idle, model_loaded=true
+- llama-server 19080 ✅ ok, F16 ctx 8192
+- SSH tunnel 已建（本机 8040 / 22440）
+
+✅ **WebSocket 端到端走完** — 我用 `/tmp/test_duplex_v4.py`（已 scp 到 spark `/tmp/`）连 worker WS：
+- prepare → `{type: "prepared"}` ✅
+- audio_chunk（11.34s 官方 user_audio `tests/cases/common/user_audio/000_user_audio0.wav` + ref `BH-Ref-HT-F224-...wav`） → 每个 chunk 都收到 `{type: "result", is_listen: True, ...}` ✅
+- worker 日志：`LISTEN t=N wall=277ms | prefill=72 generate=205ms kv=279` —— prefill + generate 全部跑了 ✅
+
+### ❌ 未解决：模型一直 LISTEN 不 SPEAK
+
+不管发什么音频（合成 sine、真人 ref audio 6s、官方 user_audio 11.34s），模型每个 chunk 返回 `is_listen=True` `text=""`，**完全不 speak**。
+
+可能原因（按优先级）：
+1. **F16 模型在此 ctx 下默认参数 sample 不出 speak token** — 路线 C2 用 Q8 + 不同 backend 跑通过，B-cpp 是 F16 + cpp backend 第一次端到端跑。可能 sampling distribution 对 listen_id 偏置太大
+2. **DuplexConfig 没传** — 我 test 只传了 `{"temperature": 0.7, "top_p": 0.9, "top_k": 50}`，未传 `listen_prob_scale` / `force_listen_count` / `ls_mode`。默认 `force_listen_count=3` 前 3 chunks 强制 listen，但后面的也 listen
+3. **decode_mode="sampling"** — 试试 `"greedy"`
+4. **listen_prob_scale 默认 1.0**，调到 0.3-0.5 强制偏向 speak
+5. **前端可能要发 turn-end / end_of_user_speech 信号** —— 看 docs 协议是否完整
+
+### 下次会话第一步（明确指令）
+
+**别再装依赖、别再重启服务**（已经齐了）。直接做以下尝试，每步独立验证：
+
+#### Step 1 — 调 sampling 参数让 model speak
+改 `/tmp/test_duplex_v4.py` 的 prepare 消息：
+```python
+await ws.send(json.dumps({
+    "type": "prepare",
+    "system_prompt": "You are a helpful assistant.",
+    "ref_audio_base64": base64.b64encode(ref.tobytes()).decode(),
+    "config": {
+        "decode_mode": "greedy",
+        "listen_prob_scale": 0.3,
+        "force_listen_count": 0,
+        "ls_mode": "explicit",
+    },
+}))
+```
+重跑 `.venv/base/bin/python /tmp/test_duplex_v4.py`。如果 speak>0 就找到方向了。
+
+#### Step 2 — 切 Q8（如果 Step 1 没解决）
+修改 `start_all.sh` 或 `config.json`，把 model 路径从 `MiniCPM-o-4_5-F16.gguf` 改成 Q8_0（路径在 `~/Documents/workspace/spark-minicpm/models/`，跟路线 C2 用的同一个）。重启服务后重跑测试。
+
+#### Step 3 — 看官方 bench 测试是否过
+```bash
+ssh spark_704 'cd /home/LChuang/workspace/MiniCPM-o-Demo-Comni && .venv/base/bin/python tests/bench_duplex_ws.py'
+```
+注意它 hardcode worker ports 22400/22401，可能要改成 22440。如果官方 bench 也全 LISTEN，说明这个模型/backend 状态本就是 broken 的，不是我们配错。
+
+#### Step 4 — 路径 4 比对（最后手段）
+进路线 C2 调通用的 cpp_server（`MiniCPM-V-CookBook/demo/web_demo/WebRTC_Demo`），对比 sampling 参数差异。
+
+### 关键文件指引
+- Worker WS handler: `worker.py:2105 duplex_ws()`
+- DuplexConfig schema 默认值: `core/schemas/duplex.py:146` (`force_listen_count=3`, `decode_mode="sampling"`, `listen_prob_scale=1.0`)
+- C++ backend prepare: `core/processors/cpp_backend.py:1060 _call_update_session_config`
+- 我的测试脚本：spark `/tmp/test_duplex_v{1,2,3,4}.py`（v4 是最完整版）
+
+### Spark 端服务管理（不变）
+```bash
+# 本机
+cd /Users/licko/Documents/workspace/cc_test/AllRealHub/spark-minicpm
+bash route-b-cpp-up.sh    # 启 (会先停路线 C)
+bash route-b-cpp-down.sh  # 停
+# 注意：访问 http://localhost:8040/ (HTTP，不是 HTTPS)
+```
+
+### 不要重复踩的坑
+- 不要重新装 `soundfile/PyYAML/Pillow/librosa/websockets` — 已装好
+- 不要以为是"前端 timeout 太短" — 真根因是 worker 抛 ModuleNotFoundError 直接断 WS
+- 不要在 .venv 之外的环境装（venv 路径：`/home/LChuang/workspace/MiniCPM-o-Demo-Comni/.venv/base/`）
+- 切 Q8 时注意 ctx 不要超过 GGUF metadata（昨晚发现 16K 反而慢）
+
+---
+
+## 历史进度（路线 C2，仍可用）
+
 > 最后更新：2026-05-11 14:10 by Claude Code session（路线 C2 调优 + 监控分析）
 
 ## 当前进度（2026-05-11 14:10）
