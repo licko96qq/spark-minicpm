@@ -77,6 +77,14 @@ C++ duplex 模式的音频**不走** `result.audio_data`，走独立 WS 消息�
 - 临时建议：屏幕共享/陪伴模式下**默认关闭高清视觉**，1 slice 已够识别屏幕元素
 - 待办：考虑前端把「高清视觉」与「屏幕共享模式」互斥；或在勾选高清时弹警告
 
+### 📋 待办（TODO）
+
+- [ ] **评估 FlagOS 优化版**：https://modelscope.cn/models/FlagRelease/MiniCPM-o-4.5-nvidia-FlagOS — 看 4090/5090 上能否用这个 NVIDIA 优化版本替代 llama.cpp-omni（可能是 vLLM/TRT-LLM/SGLang），如果可用可能性能更好
+- [ ] 路线 D 的 VAD 移植 + 4090/5090 实测
+- [ ] B-cpp 在 4090（24G VRAM）上跑 Q4_K_M 验证可行性
+
+---
+
 ### 2026-05-11 18:30 屏幕共享陪伴模式上线（A 方案阶段 1）
 
 新增功能：omni 模式顶部加「屏幕共享」按钮，点击切换 摄像头 ↔ 屏幕共享 (`getDisplayMedia`)，自动应用陪伴策略。
