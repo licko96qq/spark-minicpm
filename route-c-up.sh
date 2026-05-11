@@ -5,6 +5,9 @@
 set -euo pipefail
 
 LLM_QUANT="${1:-F16}"
+# ⚠️ oneclick.sh 的 LLM_QUANT 不传到 cpp_server，cpp_server 走 auto_detect 优先 Q4_K_M
+# 唯一可靠办法：传 LLM_MODEL=<完整文件名> 环境变量
+LLM_MODEL_FILE="MiniCPM-o-4_5-${LLM_QUANT}.gguf"
 SPARK_REMOTE="${SPARK_REMOTE:-spark_704}"
 DEMO_DIR="/home/LChuang/workspace/MiniCPM-V-CookBook/demo/web_demo/WebRTC_Demo"
 
@@ -14,7 +17,7 @@ echo "==> [1/3] 启动 spark 端 4 服务 (LLM_QUANT=$LLM_QUANT, mode=duplex)"
 if ssh "$SPARK_REMOTE" "curl -sf http://localhost:9061/health 2>/dev/null | grep -q healthy"; then
   echo "    [skip] services already running (cpp_server healthy)"
 else
-  ssh "$SPARK_REMOTE" "cd $DEMO_DIR && rm -f .logs/oneclick-start.log && nohup env PATH=\"\$HOME/.local/bin:\$HOME/.npm-global/bin:\$PATH\" PYTHON_CMD=/home/LChuang/miniconda3/envs/minicpm/bin/python LLAMACPP_ROOT=/home/LChuang/workspace/llama.cpp-omni MODEL_DIR=/home/LChuang/workspace/MiniCPM-o-4_5-gguf LLM_QUANT=$LLM_QUANT CPP_MODE=duplex bash oneclick.sh start > .logs/oneclick-start.log 2>&1 < /dev/null & disown && echo started"
+  ssh "$SPARK_REMOTE" "cd $DEMO_DIR && rm -f .logs/oneclick-start.log && nohup env PATH=\"\$HOME/.local/bin:\$HOME/.npm-global/bin:\$PATH\" PYTHON_CMD=/home/LChuang/miniconda3/envs/minicpm/bin/python LLAMACPP_ROOT=/home/LChuang/workspace/llama.cpp-omni MODEL_DIR=/home/LChuang/workspace/MiniCPM-o-4_5-gguf LLM_MODEL=$LLM_MODEL_FILE CPP_MODE=duplex bash oneclick.sh start > .logs/oneclick-start.log 2>&1 < /dev/null & disown && echo started"
   echo "    started (waiting ~90s for cpp model load)"
 fi
 
