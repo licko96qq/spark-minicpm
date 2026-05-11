@@ -1,7 +1,7 @@
 # spark MiniCPM 项目 inventory（路线 A/B/C/C2 归档）
 
 > 更新：2026-05-10 01:30
-> 主机：`spark_704` = 192.168.8.202 (DGX Spark, GB10 unified memory 128G)
+> 主机：`spark_704` = <SPARK_LAN_IP> (DGX Spark, GB10 unified memory 128G)
 > 当前主线：**路线 C（F16）**，路线 C2 后端 prompt 字段已就绪
 
 ## TL;DR — 看这一张表就够
@@ -203,7 +203,7 @@ assistant_prompt = "<|audio_end|><|im_end|>\n"   # 保持原值
 **测试方法**（屏幕共享前端没改时也能测后端 prompt）：
 ```bash
 # 直接 curl backend 调 init_sys_prompt 带自定义 prompt
-ssh spark_704 'curl -X POST http://localhost:8021/api/inference/192.168.8.202:9060/init_sys_prompt \
+ssh spark_704 'curl -X POST http://localhost:8021/api/inference/<SPARK_LAN_IP>:9060/init_sys_prompt \
   -H "Content-Type: application/json" \
   -d "{\"media_type\":\"omni\",\"voice_clone_prompt\":\"<|im_start|>system\nStreaming Duplex Conversation! 你是用户的桌面陪伴助手。\n<|audio_start|>\"}"'
 ```

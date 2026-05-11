@@ -11,7 +11,7 @@ bash route-c-up.sh Q4_K_M    # 切回 Q4 也行
 bash route-c-down.sh
 ```
 
-浏览器：`https://localhost:8088/` （Mac，走 SSH tunnel）/ `https://192.168.8.202:8088/`（手机同 WiFi 直连）
+浏览器：`https://localhost:8088/` （Mac，走 SSH tunnel）/ `https://<SPARK_LAN_IP>:8088/`（手机同 WiFi 直连）
 
 ---
 
@@ -29,7 +29,7 @@ spark:7880 (LiveKit) ⇄ spark:8021 (FastAPI Backend)
                       MiniCPM-o-4_5-F16.gguf + audio/tts/vision/token2wav-gguf
 ```
 
-前端 prod build 由 spark 端 `serve-prod.mjs` 用 HTTPS 8088 提供（自签证书 IP 192.168.8.202）。
+前端 prod build 由 spark 端 `serve-prod.mjs` 用 HTTPS 8088 提供（自签证书 IP <SPARK_LAN_IP>）。
 
 ## 关键路径（spark）
 
@@ -43,7 +43,7 @@ spark:7880 (LiveKit) ⇄ spark:8021 (FastAPI Backend)
 | 日志 | `WebRTC_Demo/.logs/{livekit,backend,cpp_server,frontend}.log` |
 | Python venv | `~/miniconda3/envs/minicpm/`（Python 3.10.20） |
 | livekit-server | `~/.local/bin/livekit-server` v1.9.11 |
-| 自签证书 | `WebRTC_Demo/.certs/server.{crt,key}`（IP 192.168.8.202） |
+| 自签证书 | `WebRTC_Demo/.certs/server.{crt,key}`（IP <SPARK_LAN_IP>） |
 
 ## oneclick 关键环境变量
 

@@ -50,7 +50,7 @@ ssh -fN \
 
 echo ""
 echo "✅ 路线 C up. 浏览器打开: https://localhost:8088/"
-echo "   (手机同 WiFi: https://192.168.8.202:8088/)"
+echo "   (手机同 WiFi: https://<SPARK_LAN_IP>:8088/)"
 echo ""
 echo "查看日志: ssh $SPARK_REMOTE 'cd $DEMO_DIR && bash oneclick.sh logs cpp'"
 echo "停服务:   bash route-c-down.sh"

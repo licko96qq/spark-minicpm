@@ -72,7 +72,7 @@ bash /Users/licko/Documents/workspace/cc_test/AllRealHub/spark-minicpm/routes/c/
 | cpp_server health | 9061 | `curl http://localhost:9061/health` |
 | llama-server | 19060 | cpp_server 内部调用，不对外 |
 
-同 WiFi 直连：`https://192.168.8.202:8088/`（首次需接受自签证书）。
+同 WiFi 直连：`https://<SPARK_LAN_IP>:8088/`（首次需接受自签证书）。
 
 ## 配置文件改动点
 

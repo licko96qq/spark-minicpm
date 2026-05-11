@@ -16,7 +16,7 @@ ssh-copy-id -i ~/.ssh/id_ed25519.pub LChuang@<spark-ip>
 
 ```
 Host spark_704
-    HostName 192.168.8.202
+    HostName <SPARK_LAN_IP>
     User LChuang
     IdentityFile ~/.ssh/id_ed25519
     ServerAliveInterval 60

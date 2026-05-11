@@ -332,7 +332,7 @@ ssh -fN \
 open https://localhost:8088/
 ```
 
-如果在同一局域网内可直连 `https://192.168.8.202:8088/`。
+如果在同一局域网内可直连 `https://<SPARK_LAN_IP>:8088/`。
 
 ### 路线 B → 路线 C 选型决策
 
@@ -436,7 +436,7 @@ ssh spark_704 'cd ~/workspace/MiniCPM-V-CookBook/demo/web_demo/WebRTC_Demo && ba
 - 跑 oneclick.sh start，踩三个坑全部解决：(1) livekit-server 装 /usr/local/bin 要 sudo → 手动装到 ~/.local/bin/；(2) pnpm 装到 ~/.npm-global/bin 不在脚本搜索路径 → 加 PATH 环境变量；(3) **pnpm 10+ ERR_PNPM_IGNORED_BUILDS 安全机制误判 build 失败** → 绕开 pnpm 直接 `node_modules/.bin/vite build` + 写 dist/.cpp_mode 让 oneclick 跳过 build
 - 4 服务全部 running：LiveKit 7880 / Backend 8021 / cpp_server 9060/9061 / Frontend 8088（HTTPS 自签）
 - 用户 Mac 浏览器实测：能用 + 不卡 + 字幕实时显示，但智能水平低（Q4_K_M 4-bit 量化 + 9B 上限）
-- 飞书发地址给手机端测：`https://192.168.8.202:8088/`
+- 飞书发地址给手机端测：`https://<SPARK_LAN_IP>:8088/`
 - 切 F16：发现 spark 内存紧张（121G/121G，swap 吃 8G），原因 vLLM Qwen3.6-35B-A3B-FP8 容器占 73G + modelscope 在下 Nemotron-30B
 - 用户授权停 vLLM `docker stop vllm-35b-a3b`，释放至 105G available
 - 下 F16 GGUF 16G（hf-mirror 90 秒下完）+ `LLM_QUANT=F16` 重启 oneclick → 4 服务 healthy，滑窗激活，**用户实测「速度也很快」**
