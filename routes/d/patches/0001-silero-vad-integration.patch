@@ -1,0 +1,253 @@
+From 6690d01bd67c416d63902701cff34b194ae94650 Mon Sep 17 00:00:00 2001
+From: licko <licko@spark>
+Date: Mon, 11 May 2026 22:07:41 +0800
+Subject: [PATCH] feat(route-D): integrate silero VAD for auto-interrupt + port
+ reassign
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+New module core/vad/:
+- silero_vad.py: 16kHz float32 PCM wrapper, 1024-sample window,
+  single-VAD simplified from route C dual-VAD logic
+- silero_vad.onnx: copied from route C
+- Singleton with persistent LSTM state, thread-safe lock
+
+worker.py changes:
+- import VAD lazy (graceful fallback if onnxruntime missing)
+- duplex_ws audio_chunk: detect_chunk(audio_waveform), prob > 0.5
+  → override chunk_force_listen = True, log [VAD-D] auto-interrupt
+- prepare msg: reset_state() at session start
+
+config.json port reassign (avoid B-cpp conflict):
+- cpp_server_port 19080 -> 19090
+- gateway_port 8040 -> 8050
+- worker_base_port 22440 -> 22450
+- data_dir data -> data-d
+
+E2E verified (CLI test, port 22450, Q4_K_M):
+- VAD triggers during user speech (prob 0.6-0.99) -> force_listen=True
+- silence: VAD doesn t fire -> model speaks normally
+- coexists with route C (port 19060) on GB10 121G unified mem
+
+Branch: route-d (forked from master commit 596d1af)
+---
+ .gitignore             |   2 +
+ config.json            |   8 +--
+ core/vad/__init__.py   |   0
+ core/vad/silero_vad.py | 109 +++++++++++++++++++++++++++++++++++++++++
+ worker.py              |  25 ++++++++++
+ 5 files changed, 140 insertions(+), 4 deletions(-)
+ create mode 100644 core/vad/__init__.py
+ create mode 100644 core/vad/silero_vad.py
+
+diff --git a/.gitignore b/.gitignore
+index 2367940..e014e31 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -15,3 +15,5 @@ frontend/mobile/dist/
+ tmp/
+ static/mobile/
+ frontend/mobile/package-lock.json
++data-d/
++.venv
+diff --git a/config.json b/config.json
+index d71738e..00c65ed 100644
+--- a/config.json
++++ b/config.json
+@@ -5,7 +5,7 @@
+         "llamacpp_root": "/home/LChuang/workspace/llama.cpp-omni",
+         "model_dir":     "/home/LChuang/workspace/MiniCPM-o-4_5-gguf",
+         "llm_model":     "MiniCPM-o-4_5-Q4_K_M.gguf",
+-        "cpp_server_port": 19080,
++        "cpp_server_port": 19090,
+         "ctx_size": 8192,
+         "n_gpu_layers": 99
+     },
+@@ -16,12 +16,12 @@
+     },
+ 
+     "service": {
+-        "gateway_port": 8040,
+-        "worker_base_port": 22440,
++        "gateway_port": 8050,
++        "worker_base_port": 22450,
+         "num_workers": 1,
+         "max_queue_size": 1000,
+         "request_timeout": 300.0,
+-        "data_dir": "data"
++        "data_dir": "data-d"
+     },
+ 
+     "duplex": {
+diff --git a/core/vad/__init__.py b/core/vad/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/core/vad/silero_vad.py b/core/vad/silero_vad.py
+new file mode 100644
+index 0000000..6cc7090
+--- /dev/null
++++ b/core/vad/silero_vad.py
+@@ -0,0 +1,109 @@
++"""Silero VAD wrapper for route D.
++
++精简版：单 VAD + 1024 samples 滑窗，输入 16kHz float32 PCM。
++每个 audio_chunk (1s = 16000 samples) 切成 15-16 个 1024 windows，
++计算 mean speech probability，超过阈值 → 用户在说话。
++
++参考: spark_704:/home/LChuang/workspace/MiniCPM-V-CookBook/demo/web_demo/WebRTC_Demo/
++       omini_backend_code/code/voice_chat/vad/vad_utils.py
++"""
++
++import logging
++import os
++import threading
++from typing import Optional
++
++import numpy as np
++
++logger = logging.getLogger(__name__)
++
++_DEFAULT_ONNX_PATH = os.path.join(os.path.dirname(__file__), "silero_vad.onnx")
++
++
++class SileroVAD:
++    """Silero VAD ONNX wrapper, thread-safe via state lock.
++
++    Usage:
++        vad = SileroVAD()
++        prob = vad.detect(audio_chunk_16khz_float32)  # returns 0-1 speech probability
++    """
++
++    WINDOW_SIZE = 1024  # samples @ 16kHz = 64ms
++    SAMPLE_RATE = 16000
++
++    def __init__(self, onnx_path: Optional[str] = None):
++        try:
++            import onnxruntime
++        except ImportError as e:
++            raise RuntimeError(
++                "SileroVAD requires onnxruntime. pip install onnxruntime"
++            ) from e
++
++        path = onnx_path or _DEFAULT_ONNX_PATH
++        if not os.path.exists(path):
++            raise FileNotFoundError(f"silero_vad.onnx not found at {path}")
++
++        opts = onnxruntime.SessionOptions()
++        opts.inter_op_num_threads = 1
++        opts.intra_op_num_threads = 1
++        opts.log_severity_level = 4
++        self.session = onnxruntime.InferenceSession(
++            path, providers=["CPUExecutionProvider"], sess_options=opts
++        )
++        # Persistent LSTM state across chunks
++        self._h = np.zeros((2, 1, 64), dtype=np.float32)
++        self._c = np.zeros((2, 1, 64), dtype=np.float32)
++        self._lock = threading.Lock()
++        logger.info(f"SileroVAD loaded from {path}")
++
++    def reset_state(self):
++        """Reset LSTM state, call between sessions."""
++        with self._lock:
++            self._h.fill(0.0)
++            self._c.fill(0.0)
++
++    def detect_window(self, window: np.ndarray) -> float:
++        """Run VAD on one 1024-sample window @ 16kHz, return speech prob 0-1."""
++        if window.shape[-1] != self.WINDOW_SIZE:
++            raise ValueError(f"expected window {self.WINDOW_SIZE} samples, got {window.shape}")
++        x = window.astype(np.float32).reshape(1, -1)
++        with self._lock:
++            out, h, c = self.session.run(
++                None,
++                {
++                    "input": x,
++                    "h": self._h,
++                    "c": self._c,
++                    "sr": np.array(self.SAMPLE_RATE, dtype="int64"),
++                },
++            )
++            self._h, self._c = h, c
++        return float(out[0, 0])
++
++    def detect_chunk(self, audio: np.ndarray) -> float:
++        """Run VAD on a multi-window chunk (e.g. 1s = 16 windows @ 1024).
++
++        Returns mean speech probability across windows in the chunk.
++        Frames shorter than WINDOW_SIZE are zero-padded; trailing partial window dropped.
++        """
++        audio = np.asarray(audio, dtype=np.float32).flatten()
++        n_windows = len(audio) // self.WINDOW_SIZE
++        if n_windows == 0:
++            return 0.0
++        probs = []
++        for i in range(n_windows):
++            start = i * self.WINDOW_SIZE
++            window = audio[start : start + self.WINDOW_SIZE]
++            probs.append(self.detect_window(window))
++        return float(np.mean(probs))
++
++
++_global_vad: Optional[SileroVAD] = None
++
++
++def get_vad() -> SileroVAD:
++    """Lazy-init global VAD singleton."""
++    global _global_vad
++    if _global_vad is None:
++        _global_vad = SileroVAD()
++    return _global_vad
+diff --git a/worker.py b/worker.py
+index ebffef4..e69e41b 100644
+--- a/worker.py
++++ b/worker.py
+@@ -39,6 +39,14 @@ from core.schemas.chat import ChatRequest, ChatResponse
+ from core.schemas.streaming import (
+     StreamingRequest, StreamingChunk, StreamingResponse, StreamingConfig,
+ )
++# Route D: Silero VAD for auto-interrupt (replaces manual Force Listen)
++try:
++    from core.vad.silero_vad import get_vad as _get_silero_vad
++    _VAD_AVAILABLE = True
++except Exception as _vad_imp_err:
++    _VAD_AVAILABLE = False
++    _get_silero_vad = None
++
+ from core.schemas.duplex import (
+     DuplexConfig, DuplexGenerateResult, DuplexPrefillRequest,
+ )
+@@ -1542,6 +1550,11 @@ async def half_duplex_ws(ws: WebSocket):
+             msg_type = msg.get("type", "")
+ 
+             if msg_type == "prepare":
++                # Route D: reset VAD LSTM state at session start
++                if _VAD_AVAILABLE:
++                    try: _get_silero_vad().reset_state()
++                    except Exception: pass
++
+                 config = msg.get("config", {})
+ 
+                 vad_cfg = config.get("vad", {})
+@@ -2209,6 +2222,18 @@ async def duplex_ws(ws: WebSocket):
+ 
+         # per-chunk Force Listen 标记
+         chunk_force_listen = bool(msg.get("force_listen", False))
++
++        # Route D: Silero VAD auto-interrupt
++        # 当用户开口（VAD prob > 0.5）时强制 force_listen=True，让模型立刻切回 LISTEN
++        if _VAD_AVAILABLE and not chunk_force_listen:
++            try:
++                _vad = _get_silero_vad()
++                _vad_prob = _vad.detect_chunk(audio_waveform)
++                if _vad_prob > 0.5:
++                    chunk_force_listen = True
++                    logger.info(f"[VAD-D] auto-interrupt prob={_vad_prob:.2f}")
++            except Exception as _e:
++                logger.warning(f"[VAD-D] detect failed: {_e}")
+         # per-chunk HD vision override（fallback 到 session 默认值）
+         chunk_max_slice_nums: int = msg.get("max_slice_nums", session_max_slice_nums)
+ 
+-- 
+2.43.0
+

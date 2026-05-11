@@ -1,6 +1,46 @@
 # spark-minicpm — 会话交接
 
-> 最后更新：2026-05-11 16:05 by Claude Code session（路线 B-cpp 4 模式 demo — 真根因定位 + 前端默认 config 修复完成，等用户浏览器实测）
+> 最后更新：2026-05-11 22:15 by Claude Code session（Phase A 归档完成 + Phase B 路线 D 自动 VAD 打断 CLI 验证通过）
+
+---
+
+## 🎯 当前进展（2026-05-11 22:15）
+
+### Phase A: GitHub 归档（commit `adf6496`）
+
+完成项：
+- ✅ 目录重组：`routes/{b-cpp,c,d}/` 三主线、`archive/route-a/` 历史快照
+- ✅ patches/0001-screen-share-companion-mode.patch（B-cpp commit 596d1af 导出）
+- ✅ docs 新增 14（路线对比） / 15（4090-5090 迁移） / 16（故障排查）
+- ✅ scripts 新增 download-models.sh / build-llama-cpp-omni.sh / apply-patches.sh / ssh-setup.md
+- ✅ README.md 10 section 完整重写 + LICENSE (Apache 2.0)
+- ✅ 路线 README × 4 + patches/README × 3
+
+待用户操作：在 GitHub 建空仓 `spark-minicpm`，然后我 `git remote add origin` + `git push`。
+
+### Phase B: 路线 D 自动 VAD 打断（spark commit `6690d01`，route-d 分支）
+
+完成项：
+- ✅ `cp -r MiniCPM-o-Demo-Comni MiniCPM-o-Demo-D` + 切 route-d 分支
+- ✅ 端口避让：gateway 8050 / worker 22450 / llama 19090（与 B-cpp 19080、C 19060 共存）
+- ✅ `core/vad/silero_vad.py` 新建：16kHz float32 PCM 输入，1024-sample 滑窗，单 VAD 简化版（路线 C 是 dual VAD，D 用单 VAD 足够）
+- ✅ `worker.py` 集成：duplex_ws audio_chunk 处理时检测 prob > 0.5 → 覆盖 `chunk_force_listen = True`
+- ✅ `.venv` symlink 共享 Comni 依赖 + onnxruntime 1.23.2 装好
+- ✅ `silero_vad.onnx` 从路线 C 复制（1.8 MB，up.sh 自动处理）
+
+CLI 端到端验证（`/tmp/test_d_silence.py`）：
+- ✅ user_audio 11.34s 期间：VAD prob 0.6-0.99 持续触发 → 模型 LISTEN 不抢话
+- ✅ 用户停顿后：VAD 不触发 → 模型 SPEAK 出 `"我错了，再也不敢了。"` + 3 个 audio_only msgs (~4s 音频)
+- ✅ 静音 prob < 0.05（noise floor 不误触发）
+- ✅ 与路线 C 同时跑（2× Q4_K_M 共 ~10G unified mem）
+
+待用户验证：浏览器实测「模型 SPEAK 中开口能否在 < 300ms 内自动打断」。
+
+**启动方式**：`bash routes/d/up.sh [F16|Q8_0|Q4_K_M]`，默认 Q4_K_M。
+
+---
+
+> （历史记录见下方）
 
 ---
 
