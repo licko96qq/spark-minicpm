@@ -1,6 +1,96 @@
 # spark-minicpm — 会话交接
 
-> 最后更新：2026-05-11 22:15 by Claude Code session（Phase A 归档完成 + Phase B 路线 D 自动 VAD 打断 CLI 验证通过）
+> 最后更新：2026-05-12 00:30 by Claude Code session（GitHub 上线完成，下一步 4090 PyTorch 路线 E）
+
+---
+
+## 🚀 给下一会话：立即接手指南（必读，2 分钟读完）
+
+### 当前局面
+
+用户要在 **4 张 RTX 4090** 上跑通 MiniCPM-o 4.5 的 **omni 双工**（屏幕共享 + 自动 VAD + 不卡顿 + 全性能 BF16）。
+
+之前我们在 spark (DGX Spark GB10) 上做了三条路线（B-cpp / C / D 已 GitHub 归档：https://github.com/licko96qq/spark-minicpm），但 GB10 内存带宽只有 A100 的 17%，被迫用 llama.cpp + Q4/Q8 量化绕开。
+
+**4090 完全不同**——内存带宽 1008 GB/s（A100 的 65%），**官方推荐的 PyTorch + flash-attn 2 + torch.compile 路径在 4090 上完全够**。
+
+### 立即执行的事（路线 E）
+
+1. **SSH 到 4090**（用户的 memory 文件 `reference_ssh_hosts_inventory.md` 有别名，**问用户拿 alias**，不要自己猜）
+2. **检查 4090 状态**：CUDA 12.8+? Python venv? 磁盘 ≥30G?
+3. **clone OpenBMB 官方 demo**（**不是 Comni 分支**，是 PyTorch 主线版本）：
+   ```bash
+   git clone https://github.com/OpenBMB/MiniCPM-o-Demo
+   cd MiniCPM-o-Demo
+   pip install -r requirements.txt
+   ```
+4. **编译 flash-attn 2 sm_89**（针对 4090 Ada 架构，~90 分钟）：
+   ```bash
+   FLASH_ATTN_CUDA_ARCHS=89 pip install flash-attn==2.8.2 --no-build-isolation
+   ```
+5. **改 config.json**：`attn_implementation=flash_attention_2`
+6. **precompile + 启动**：
+   ```bash
+   python precompile.py
+   bash launch.sh
+   ```
+7. 浏览器 + SSH tunnel 验证 omni 双工 + 自动打断 + 屏幕共享
+
+### 4090 路径选择决策（已经讨论过，结论别再翻案）
+
+| 路径 | 适合 4090 | 备注 |
+|---|---|---|
+| **路线 E：PyTorch + flash-attn 2 + torch.compile（BF16）** | ✅ **首选** | 官方推荐，4090 65% A100 带宽够。9B 模型 BF16 18G 单卡装下 |
+| 路线 B-cpp / D（llama.cpp-omni Q4/Q8）| 备用 | 如果 PyTorch 装不上再退回这条 |
+| FlagOS（vLLM 0.13 + plugin）| ❌ | 不支持 duplex streaming（只能 chat completions）。性能比原版 vLLM 仅快 0.1-1.9% |
+| 官方 vLLM | ❌ | MiniCPM-o 4.5 omni 双工 + TTS token2wav 不在 vLLM 主线支持 |
+
+### 4 卡分配建议
+
+- **卡 0**：跑 omni duplex demo（用户主目标）
+- **卡 1-3**：保留。**不要默认上 tensor parallel** —— 9B 模型单卡装下，tp 反而引入跨卡通信开销。后续可：
+  - 1-3 给团队同事各跑一份 demo
+  - 或 1-3 跑 FlagOS docker batch 视觉分析 API（适合多人调用的场景）
+
+### 用户偏好（重要，避免犯傻）
+
+1. **公开链接抓取优先 curl**，WebFetch 报「safe to fetch」≠ 网络问题，是 claude.ai 后端白名单。**不要动不动上 CDP 让用户授权 Chrome remote-debugging**。详见 memory `feedback_url_fetch_priority.md`
+2. **用户讨厌耗 token**，简洁直接，先给结论再给原因
+3. **不要在回复末尾做总结**（用户能看 diff）
+4. **遇到高风险操作（删除、kill 多进程、改 spark 上 LChuang 系统配置）必须先问**
+5. **不要乱猜 SSH 主机别名**，问用户或读 memory `reference_ssh_hosts_inventory.md`
+6. **不要暴露内网 IP**（之前 push 前已脱敏 `192.168.x.x → <SPARK_LAN_IP>`，下次注意）
+
+### 关键资源指针
+
+| 资源 | 位置 |
+|---|---|
+| 仓库（本机） | `/Users/licko/Documents/workspace/cc_test/AllRealHub/spark-minicpm/` |
+| 仓库（GitHub） | https://github.com/licko96qq/spark-minicpm |
+| 最新本机 commit | `c7f6551` (README 重写突出亮点) |
+| spark Demo-Comni（B-cpp 主线） | spark host:`/home/LChuang/workspace/MiniCPM-o-Demo-Comni/`，commit `596d1af` |
+| spark Demo-D（D 主线，含 silero-vad） | spark host:`/home/LChuang/workspace/MiniCPM-o-Demo-D/`，commit `6690d01`（route-d branch） |
+| llama.cpp-omni（已编译 sm_120） | spark host:`/home/LChuang/workspace/llama.cpp-omni/`（4090 上要重编 sm_89） |
+| GGUF 模型 | spark host:`/home/LChuang/workspace/MiniCPM-o-4_5-gguf/`（F16/Q8/Q4 全套，4090 可 scp 复用） |
+| silero_vad.onnx | spark host: route C 子目录或 Demo-D/core/vad/ |
+| 路线 D 端口 | gateway 8050 / worker 22450 / llama 19090 |
+| HANDOVER 飞书文档 | https://www.feishu.cn/docx/GZ5edBGoAoc4svxUgA4cpxlDnlh |
+
+### 当前 spark 服务状态（22:45 时）
+
+- 路线 C: 跑着（端口 8088/7880/9060/19060），Q4_K_M
+- 路线 D: 跑着（端口 8050/22450/19090），Q4_K_M
+- 路线 B-cpp: 已停
+
+### 已知待办（TODO）
+
+- [ ] **4090 路线 E** ← 下一会话主任务
+- [ ] B-cpp 浏览器实测自动打断 < 300ms（D 在 spark 上 CLI 验证通过，但浏览器端没实测）
+- [ ] **评估 FlagOS** 用于 4090/5090 视觉批量 API（与路线 E 并行不冲突）
+
+---
+
+> 历史日志见下方（28KB，可不读，需要时查找）
 
 ---
 
